@@ -1,0 +1,62 @@
+# Compose file for animelisterr. Designed to join an existing Docker
+# network that already has your Postgres and Sonarr containers on it.
+#
+# Usage:
+#   1. Create a .env (see .env.example) with DB_HOST pointing at your
+#      existing Postgres container name, DB_PASS, SONARR_URL, SONARR_API_KEY.
+#   2. Set NETWORK_NAME below to the shared docker network name.
+#   3. `docker compose up -d --build`
+#
+# If you want the bundled Postgres instead, see the commented block at the
+# bottom of this file.
+
+services:
+  animelisterr:
+    build: .
+    image: animelisterr:latest
+    container_name: animelisterr
+    restart: unless-stopped
+    ports:
+      - "${HTTP_PORT:-8080}:8080"
+    environment:
+      HTTP_ADDR: ":8080"
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASS: ${DB_PASS}
+      DB_NAME: ${DB_NAME:-animelisterr}
+      DB_SSLMODE: ${DB_SSLMODE:-disable}
+      SONARR_URL: ${SONARR_URL}
+      SONARR_API_KEY: ${SONARR_API_KEY}
+      REFRESH_INTERVAL: ${REFRESH_INTERVAL:-1h}
+    networks:
+      - shared
+
+networks:
+  shared:
+    # Attach to an existing user-defined bridge (the network your Sonarr
+    # and Postgres containers already share). Set NETWORK_NAME in .env.
+    name: ${NETWORK_NAME:-bridge}
+    external: true
+
+# ---- Optional: run Postgres inside compose instead of using an existing one ----
+# Uncomment this block and set DB_HOST=postgres in .env to enable.
+#
+#  postgres:
+#    image: postgres:16-alpine
+#    container_name: animelisterr-postgres
+#    restart: unless-stopped
+#    environment:
+#      POSTGRES_USER: ${DB_USER:-postgres}
+#      POSTGRES_PASSWORD: ${DB_PASS}
+#      POSTGRES_DB: ${DB_NAME:-animelisterr}
+#    volumes:
+#      - animelisterr-pg:/var/lib/postgresql/data
+#    healthcheck:
+#      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-animelisterr}"]
+#      interval: 5s
+#      timeout: 5s
+#      retries: 20
+#
+#volumes:
+#  animelisterr-pg:

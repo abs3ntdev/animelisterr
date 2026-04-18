@@ -1,0 +1,6 @@
+/animelisterr
+/bin/
+*.env
+.env
+.env.local
+/tmp/
