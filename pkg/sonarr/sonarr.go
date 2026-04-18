@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 	"unicode"
@@ -189,6 +190,15 @@ func (c *Client) Ping(ctx context.Context) error {
 	return nil
 }
 
+// minTitleSimilarity is the Jaccard floor below which a candidate is
+// rejected outright, even if anime-provenance and popularity bonuses would
+// otherwise push it to the top of the score list. Observed value chosen
+// empirically from live Sonarr lookups: a legitimate fuzzy match (e.g.
+// "Dr. Stone" vs "Dr. STONE: Science Future") scores ≥ 0.5, while junk
+// matches ("The Angel Next Door..." vs "Diebuster (Dupe series entry...)")
+// score ~0.
+const minTitleSimilarity = 0.25
+
 // BestMatch picks the most plausible Sonarr lookup hit for a given ranking
 // title. Sonarr returns many loosely-related shows (searching "Breaking
 // Bad" yields "Breaking Italy", "Prison Break", etc. per live API data),
@@ -198,25 +208,34 @@ func (c *Client) Ping(ctx context.Context) error {
 //
 //  1. Required: the result has a tvdbId. Results without one cannot be fed
 //     to Sonarr's Custom List anyway.
-//  2. Title similarity to the query. Exact normalized match = 1.0; slug
+//  2. Required: the candidate's title similarity to the query must meet
+//     minTitleSimilarity. This prevents anime-provenance bonuses from
+//     rescuing totally unrelated results.
+//  3. Title similarity to the query. Exact normalized match = 1.0; slug
 //     equality = 0.95; else token-Jaccard score over the normalized title
 //     and every alternateTitle. A strong title match is the single biggest
-//     contributor.
-//  3. Anime provenance. +0.30 when originalLanguage.Name == "Japanese"
+//     contributor. Both the query and each candidate have season suffixes
+//     stripped ("Foo Season 2" -> "Foo") before comparison, so sequel
+//     rankings match the base TVDB record.
+//  4. Anime provenance. +0.30 when originalLanguage.Name == "Japanese"
 //     (per OpenAPI spec, this is TVDB metadata, not a user-set tag).
 //     +0.10 when the Genres array contains "Anime". +0.05 when
 //     seriesType == "anime" (usually unset on lookup results).
-//  4. Popularity: +0.05 if ratings.votes >= 100 (filters out obscure
+//  5. Popularity: +0.05 if ratings.votes >= 100 (filters out obscure
 //     fake-looking entries with zero votes).
-//  5. Sonarr native ordering: small tiebreaker (-0.0001 * index).
+//  6. Sonarr native ordering: small tiebreaker (-0.0001 * index).
 //
-// The function returns the best candidate or nil if none have a tvdbId.
+// The function returns the best candidate, or nil if none have a tvdbId or
+// if every candidate falls below the similarity floor.
 func BestMatch(query string, results []Series) *Series {
 	if len(results) == 0 {
 		return nil
 	}
-	qNorm := normalizeTitle(query)
-	qSlug := slugify(query)
+	// Strip sequel markers from the query so "Foo Season 2" matches the
+	// base TVDB record "Foo" (TVDB packs all seasons into one entry).
+	queryBase := StripSeasonSuffix(query)
+	qNorm := normalizeTitle(queryBase)
+	qSlug := slugify(queryBase)
 	qTokens := tokenSet(qNorm)
 
 	type scored struct {
@@ -233,6 +252,8 @@ func BestMatch(query string, results []Series) *Series {
 
 		// Title similarity — highest of exact/slug/token-jaccard across
 		// the canonical title, sortTitle, slug, and every alternate title.
+		// Each candidate is also season-stripped so "Foo Season 2" on
+		// either side normalises to "Foo".
 		candidates := []string{r.Title, r.SortTitle, r.TitleSlug}
 		for _, alt := range r.AlternateTitles {
 			candidates = append(candidates, alt.Title)
@@ -242,16 +263,26 @@ func BestMatch(query string, results []Series) *Series {
 			if c == "" {
 				continue
 			}
-			cn := normalizeTitle(c)
+			cBase := StripSeasonSuffix(c)
+			cn := normalizeTitle(cBase)
 			if cn == qNorm {
 				titleScore = max64(titleScore, 1.0)
 				continue
 			}
-			if slugify(c) == qSlug {
+			if slugify(cBase) == qSlug {
 				titleScore = max64(titleScore, 0.95)
 				continue
 			}
 			titleScore = max64(titleScore, jaccard(qTokens, tokenSet(cn)))
+		}
+
+		// Reject candidates whose best-possible title similarity against
+		// the query is below the floor. Without this, a candidate with
+		// zero title overlap but Japanese-origin + anime genre + >100
+		// votes scores 0.45 from bonuses alone and wins over a legitimate
+		// but lower-ranked result.
+		if titleScore < minTitleSimilarity {
+			continue
 		}
 
 		score := titleScore
@@ -277,6 +308,46 @@ func BestMatch(query string, results []Series) *Series {
 		return nil
 	}
 	return best.s
+}
+
+// seasonSuffixRE matches trailing season/part/cour markers on an anime
+// title. Anime Corner consistently appends things like "Season 2", "Part 3",
+// "Cour 2", " IV" to sequel entries, but TVDB stores the series under the
+// base title (e.g. "Re:ZERO -Starting Life in Another World-"), so an
+// exact-title match against Sonarr's lookup response requires stripping
+// the suffix from the query *and* any candidate whose editor added the
+// same suffix on the TVDB side. The regex is case-insensitive and anchored
+// to end-of-string; it handles multiple stacked suffixes ("Season 2 Part 2")
+// via repeated application in StripSeasonSuffix.
+//
+// Patterns matched (all trailing, case-insensitive, optionally preceded by
+// punctuation like `:`, `-`, or `,`):
+//
+//	Season <N>   / Seasons <N>     (e.g. "Season 2")
+//	Part <N>                       (e.g. "Part 3")
+//	Cour <N>                       (e.g. "Cour 2")
+//	S<N>                           (e.g. " S2", " S 3")
+//	<Roman>                        (e.g. " II", " IV", " VIII")
+//
+// Roman numerals are only stripped when they are the entire trailing token,
+// so titles like "Re:ZERO" (which contain no trailing Roman) are unaffected.
+var seasonSuffixRE = regexp.MustCompile(
+	`(?i)[\s:,\-–—]+(?:season\s*\d+|seasons\s*\d+|part\s*\d+|cour\s*\d+|s\s*\d+|[ivx]+)\s*$`,
+)
+
+// StripSeasonSuffix trims common "Season N", "Part N", "Cour N", "SN", or
+// trailing Roman-numeral markers from a title. It applies the regex
+// repeatedly so stacked suffixes like "Foo Season 2 Part 2" collapse all
+// the way to "Foo". Exposed so the refresher can normalize the Sonarr
+// lookup query with the same rules used for match scoring.
+func StripSeasonSuffix(s string) string {
+	for {
+		trimmed := seasonSuffixRE.ReplaceAllString(s, "")
+		if trimmed == s {
+			return strings.TrimSpace(s)
+		}
+		s = trimmed
+	}
 }
 
 // normalizeTitle lowercases, strips diacritics/punctuation, and collapses

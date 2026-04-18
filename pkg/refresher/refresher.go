@@ -154,8 +154,14 @@ func (r *Refresher) run(ctx context.Context, force bool) error {
 // resolveAndUpsert looks up a title via Sonarr, picks the best match, and
 // upserts the anime row. It always returns a DB id — a placeholder row is
 // created when the lookup fails so the ranking_entries FK is satisfied.
+//
+// The Sonarr lookup query is season-stripped ("Foo Season 2" -> "Foo")
+// because TVDB stores every season of a franchise under one series record.
+// Searching the raw sequel title produces lower-quality results; the base
+// title reliably hits the correct record in the top positions.
 func (r *Refresher) resolveAndUpsert(ctx context.Context, title string) (int64, error) {
-	results, err := r.Sonarr.Lookup(ctx, title)
+	searchTerm := sonarr.StripSeasonSuffix(title)
+	results, err := r.Sonarr.Lookup(ctx, searchTerm)
 	if err != nil {
 		a := store.Anime{
 			Title:            title,
@@ -169,6 +175,8 @@ func (r *Refresher) resolveAndUpsert(ctx context.Context, title string) (int64, 
 		return id, err
 	}
 
+	// Pass the original (unstripped) title to BestMatch — it applies its
+	// own season-aware normalization on both sides of the comparison.
 	best := sonarr.BestMatch(title, results)
 	if best == nil {
 		a := store.Anime{

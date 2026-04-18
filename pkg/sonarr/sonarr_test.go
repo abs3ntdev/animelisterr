@@ -206,3 +206,107 @@ func TestNormalizeTitle(t *testing.T) {
 		}
 	}
 }
+
+func TestStripSeasonSuffix(t *testing.T) {
+	cases := []struct{ in, want string }{
+		// Real ranking titles from live scrapes.
+		// Trailing punctuation that introduces the season marker is also
+		// stripped; this is the intended behaviour because TVDB records
+		// also lack the stylistic closing dash (e.g. "Re: ZERO, Starting
+		// Life in Another World" has no trailing "-").
+		{"Re:ZERO -Starting Life in Another World- Season 4", "Re:ZERO -Starting Life in Another World"},
+		{"The Angel Next Door Spoils Me Rotten Season 2", "The Angel Next Door Spoils Me Rotten"},
+		{"Classroom of the Elite IV", "Classroom of the Elite"},
+		{"Dr. Stone: Science Future Part 3", "Dr. Stone: Science Future"},
+		{"Attack on Titan S4", "Attack on Titan"},
+		{"Something Cour 2", "Something"},
+		// Stacked suffixes collapse
+		{"Foo Season 2 Part 2", "Foo"},
+		// Titles without suffixes are unchanged
+		{"Witch Hat Atelier", "Witch Hat Atelier"},
+		{"MARRIAGETOXIN", "MARRIAGETOXIN"},
+		{"Daemons of the Shadow Realm", "Daemons of the Shadow Realm"},
+		// Edge cases we do NOT want to over-strip
+		{"Re:ZERO", "Re:ZERO"},             // contains "Zero" but not trailing
+		{"Overlord IV", "Overlord"},        // Roman IV stripped (intentional)
+		{"86 EIGHTY-SIX", "86 EIGHTY-SIX"}, // digit-only tokens in the middle kept
+	}
+	for _, tc := range cases {
+		if got := StripSeasonSuffix(tc.in); got != tc.want {
+			t.Errorf("StripSeasonSuffix(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestBestMatch_SeasonSuffixMatchesBaseRecord(t *testing.T) {
+	// Live case from production: "Re:ZERO ... Season 4" must match the
+	// single TVDB record for the Re:ZERO franchise (which has
+	// seasonCount=4 and is correctly filtered out downstream).
+	results := []Series{
+		{
+			Title: "Re: ZERO, Starting Life in Another World", TitleSlug: "rezero-starting-life-in-another-world",
+			TvdbID:           305089,
+			OriginalLanguage: Language{Name: "Japanese"},
+			Genres:           []string{"Animation", "Anime"},
+			Statistics:       Statistics{SeasonCount: 4},
+			Ratings:          Ratings{Votes: 50000},
+		},
+	}
+	best := BestMatch("Re:ZERO -Starting Life in Another World- Season 4", results)
+	if best == nil || best.TvdbID != 305089 {
+		var got int
+		if best != nil {
+			got = best.TvdbID
+		}
+		t.Fatalf("expected Re:ZERO TVDB record (305089), got %d", got)
+	}
+}
+
+func TestBestMatch_RejectsLowSimilarityEvenIfAnime(t *testing.T) {
+	// Live failure case from production: a TVDB duplicate-placeholder
+	// record for "Diebuster" (Japanese, anime genre) was winning the
+	// lookup for "The Angel Next Door Spoils Me Rotten" because the
+	// 0.45 anime bonus swamped the near-zero title overlap. The
+	// similarity floor must reject it outright.
+	results := []Series{
+		{
+			Title:            "Diebuster (Dupe series entry, remove me. Gunbuster Series has this as Season 2)",
+			TitleSlug:        "diebuster-dupe",
+			TvdbID:           418275,
+			OriginalLanguage: Language{Name: "Japanese"},
+			Genres:           []string{"Animation", "Anime"},
+			Statistics:       Statistics{SeasonCount: 2},
+			Ratings:          Ratings{Votes: 500},
+		},
+	}
+	if best := BestMatch("The Angel Next Door Spoils Me Rotten Season 2", results); best != nil {
+		t.Fatalf("expected nil (low similarity), got tvdbId=%d title=%q", best.TvdbID, best.Title)
+	}
+}
+
+func TestBestMatch_AcceptsLegitimateFuzzyMatch(t *testing.T) {
+	// The floor must not reject real matches that only partially
+	// overlap. "Dr. Stone: Science Future Part 3" -> "Dr. STONE" should
+	// still succeed because after season-strip the query "Dr. Stone:
+	// Science Future" and the candidate "Dr. STONE" share the "dr stone"
+	// tokens (2/4 = 0.5 jaccard, well above the 0.25 floor).
+	results := []Series{
+		{
+			Title:            "Dr. STONE",
+			TitleSlug:        "dr-stone",
+			TvdbID:           355774,
+			OriginalLanguage: Language{Name: "Japanese"},
+			Genres:           []string{"Animation", "Anime"},
+			Statistics:       Statistics{SeasonCount: 4},
+			Ratings:          Ratings{Votes: 10000},
+		},
+	}
+	best := BestMatch("Dr. Stone: Science Future Part 3", results)
+	if best == nil || best.TvdbID != 355774 {
+		var got int
+		if best != nil {
+			got = best.TvdbID
+		}
+		t.Fatalf("expected Dr. STONE (355774), got %d", got)
+	}
+}
