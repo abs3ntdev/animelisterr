@@ -27,6 +27,10 @@ type Config struct {
 	// Corner publishes a full top-30 each week; the default of 10
 	// matches the original product rule ("top 10 of the blog").
 	TopN int
+	// DiscordWebhookURL, when non-empty, enables Discord notifications
+	// on new-week detection and refresh failures. Sourced from
+	// DISCORD_WEBHOOK_URL. Empty disables all notifications silently.
+	DiscordWebhookURL string
 }
 
 // DBConfig holds Postgres connection parameters. Every field accepts
@@ -69,12 +73,13 @@ func (d DBConfig) DSN() string {
 // error if any required variable is missing or malformed.
 func FromEnv() (*Config, error) {
 	cfg := &Config{
-		HTTPAddr:        getEnv("HTTP_ADDR", ":8080"),
-		FeedURL:         getEnv("FEED_URL", "https://animecorner.me/category/anime-corner/rankings/anime-of-the-week/feed"),
-		UserAgent:       getEnv("USER_AGENT", "animelisterr/1.0 (+https://github.com/abs3ntdev/animelisterr)"),
-		RefreshInterval: mustDuration(getEnv("REFRESH_INTERVAL", "1h")),
-		MaxSeasonCount:  mustInt(getEnv("MAX_SEASON_COUNT", "1"), 1),
-		TopN:            mustInt(getEnv("TOP_N", "10"), 10),
+		HTTPAddr:          getEnv("HTTP_ADDR", ":8080"),
+		FeedURL:           getEnv("FEED_URL", "https://animecorner.me/category/anime-corner/rankings/anime-of-the-week/feed"),
+		UserAgent:         getEnv("USER_AGENT", "animelisterr/1.0 (+https://github.com/abs3ntdev/animelisterr)"),
+		RefreshInterval:   mustDuration(getEnv("REFRESH_INTERVAL", "1h")),
+		MaxSeasonCount:    mustInt(getEnv("MAX_SEASON_COUNT", "1"), 1),
+		TopN:              mustInt(getEnv("TOP_N", "10"), 10),
+		DiscordWebhookURL: strings.TrimSpace(os.Getenv("DISCORD_WEBHOOK_URL")),
 	}
 
 	portStr := getEnv("DB_PORT", "5432")

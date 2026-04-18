@@ -50,6 +50,7 @@ All via environment variables:
 | `REFRESH_INTERVAL` | `1h` | Go duration (`30m`, `2h`, etc.) |
 | `MAX_SEASON_COUNT` | `1` | Max regular seasons a show may have to qualify. `0` disables the filter. |
 | `TOP_N`            | `10` | How many top-ranked entries per week are scraped and considered. `0` = no cap. |
+| `DISCORD_WEBHOOK_URL` | *unset* | Optional Discord incoming webhook. When set, posts an embed on new-week detection and refresh failures. |
 | `USER_AGENT`       | built-in | HTTP UA for scrapes and API calls |
 
 Only `SONARR_URL` and `SONARR_API_KEY` are strictly required. DB defaults

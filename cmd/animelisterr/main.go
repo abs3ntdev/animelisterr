@@ -13,6 +13,7 @@ import (
 	"github.com/abs3ntdev/animelisterr/pkg/config"
 	"github.com/abs3ntdev/animelisterr/pkg/feed"
 	"github.com/abs3ntdev/animelisterr/pkg/migrations"
+	"github.com/abs3ntdev/animelisterr/pkg/notify"
 	"github.com/abs3ntdev/animelisterr/pkg/refresher"
 	"github.com/abs3ntdev/animelisterr/pkg/scrape"
 	"github.com/abs3ntdev/animelisterr/pkg/server"
@@ -57,13 +58,20 @@ func main() {
 		log.Info("sonarr reachable", "url", cfg.Sonarr.BaseURL)
 	}
 
+	discord := notify.New(cfg.DiscordWebhookURL)
+	if discord.Enabled() {
+		log.Info("discord notifications enabled")
+	}
+
 	ref := &refresher.Refresher{
-		Log:     log,
-		Feed:    feed.New(cfg.FeedURL, cfg.UserAgent),
-		Scraper: scrape.New(cfg.UserAgent),
-		Sonarr:  sc,
-		Store:   st,
-		TopN:    cfg.TopN,
+		Log:            log,
+		Feed:           feed.New(cfg.FeedURL, cfg.UserAgent),
+		Scraper:        scrape.New(cfg.UserAgent),
+		Sonarr:         sc,
+		Store:          st,
+		Notify:         discord,
+		TopN:           cfg.TopN,
+		MaxSeasonCount: cfg.MaxSeasonCount,
 	}
 
 	go ref.RunLoop(ctx, cfg.RefreshInterval)

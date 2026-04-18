@@ -180,6 +180,17 @@ ON CONFLICT (slug) DO UPDATE SET
 	return tx.Commit(ctx)
 }
 
+// RankingExists reports whether a rankings row with this slug already
+// exists, regardless of how many of its entries have resolved metadata.
+// Used to distinguish "first time we've seen this week" from "we're
+// re-scraping a week we already know about" for notification purposes.
+func (s *Store) RankingExists(ctx context.Context, slug string) (bool, error) {
+	var exists bool
+	err := s.Pool.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM rankings WHERE slug = $1)`, slug).Scan(&exists)
+	return exists, err
+}
+
 // IsRankingComplete reports whether a ranking with this slug has already
 // been scraped AND every one of its entries resolved successfully to a
 // real TVDB record. A "complete" week can be skipped on subsequent

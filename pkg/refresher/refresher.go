@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/abs3ntdev/animelisterr/pkg/feed"
+	"github.com/abs3ntdev/animelisterr/pkg/notify"
 	"github.com/abs3ntdev/animelisterr/pkg/scrape"
 	"github.com/abs3ntdev/animelisterr/pkg/sonarr"
 	"github.com/abs3ntdev/animelisterr/pkg/store"
@@ -21,9 +23,16 @@ type Refresher struct {
 	Scraper *scrape.Scraper
 	Sonarr  *sonarr.Client
 	Store   *store.Store
+	Notify  *notify.Client // may be nil / disabled; never panic
 
 	// TopN is how many of the scraped rankings we care about.
 	TopN int
+
+	// MaxSeasonCount is mirrored from config so the new-week Discord
+	// notification can flag which entries will actually land in the
+	// Sonarr list. Not used for filtering the DB — that still happens at
+	// query time.
+	MaxSeasonCount int
 
 	mu        sync.Mutex
 	lastRun   time.Time
@@ -89,10 +98,20 @@ func (r *Refresher) run(ctx context.Context, force bool) error {
 	post, err := r.Feed.Latest(ctx)
 	if err != nil {
 		r.lastError = err
+		r.Notify.SendFailure(ctx, "animelisterr: feed fetch failed", err.Error())
 		return fmt.Errorf("feed: %w", err)
 	}
 	r.Log.Info("latest ranking post",
 		"slug", post.Slug, "season", post.Season, "year", post.Year, "week", post.Week, "url", post.URL)
+
+	// Decide whether this is a "first time we've seen this week" event
+	// before any writes happen. Used to trigger a Discord notification
+	// only on genuinely new weeks, not on every hourly re-scrape of the
+	// same slug.
+	alreadyKnown := false
+	if exists, err := r.Store.RankingExists(ctx, post.Slug); err == nil {
+		alreadyKnown = exists
+	}
 
 	// Skip the scrape + all Sonarr lookups when this week is already
 	// fully recorded. Sonarr metadata (TVDB IDs, season counts, etc.) is
@@ -115,6 +134,7 @@ func (r *Refresher) run(ctx context.Context, force bool) error {
 	entries, err := r.Scraper.Top(ctx, post.URL, r.TopN)
 	if err != nil {
 		r.lastError = err
+		r.Notify.SendFailure(ctx, "animelisterr: scrape failed", err.Error())
 		return fmt.Errorf("scrape: %w", err)
 	}
 	r.Log.Info("scraped ranking", "count", len(entries))
@@ -142,13 +162,60 @@ func (r *Refresher) run(ctx context.Context, force bool) error {
 		PublishedAt: post.Published,
 	}, dbEntries); err != nil {
 		r.lastError = err
+		r.Notify.SendFailure(ctx, "animelisterr: record ranking failed", err.Error())
 		return fmt.Errorf("record ranking: %w", err)
 	}
 
 	r.lastRun = time.Now()
 	r.lastError = nil
 	r.Log.Info("refresh complete", "week", post.Week, "entries", len(dbEntries))
+
+	// Post a Discord embed only when this is the first successful scrape
+	// of a genuinely new week. Re-scrapes of an existing week (e.g. via
+	// POST /refresh) are silent to avoid double-posting.
+	if !alreadyKnown {
+		r.notifyNewWeek(ctx, post)
+	}
 	return nil
+}
+
+// notifyNewWeek builds and sends a rich embed summarising the qualifying
+// entries just recorded. Looks up the shows from the DB rather than from
+// the entries slice so the "qualifying" flag reflects the exact same
+// predicate the Sonarr list endpoint uses (max-season-count, known TVDB).
+func (r *Refresher) notifyNewWeek(ctx context.Context, post *feed.RankingPost) {
+	if !r.Notify.Enabled() {
+		return
+	}
+	items, _, err := r.Store.CurrentSonarrList(ctx, r.TopN, r.MaxSeasonCount)
+	if err != nil {
+		r.Log.Warn("notify: CurrentSonarrList failed", "err", err)
+		return
+	}
+
+	// Build a "✓ Title — s:N" line per qualifying show.
+	var lines []string
+	for _, it := range items {
+		lines = append(lines, fmt.Sprintf("• **%s** — %d season(s), tvdb:%d",
+			it.Title, it.RegularSeasonCount, it.TvdbID))
+	}
+	desc := strings.Join(lines, "\n")
+	if desc == "" {
+		desc = "_No entries qualified for the list this week._"
+	}
+
+	e := notify.Embed{
+		Title:       fmt.Sprintf("%s %d — Week %d list updated", strings.Title(post.Season), post.Year, post.Week), //nolint:staticcheck
+		Description: desc,
+		Colour:      notify.ColourSuccess,
+		URL:         post.URL,
+		Fields: []notify.EmbedField{
+			{Name: "Qualifying", Value: fmt.Sprintf("%d of %d", len(items), r.TopN), Inline: true},
+			{Name: "Max seasons", Value: fmt.Sprintf("%d", r.MaxSeasonCount), Inline: true},
+		},
+		Footer: &notify.EmbedFooter{Text: "animelisterr"},
+	}
+	r.Notify.Send(ctx, e)
 }
 
 // resolveAndUpsert looks up a title via Sonarr, picks the best match, and
