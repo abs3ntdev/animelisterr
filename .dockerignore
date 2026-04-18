@@ -1,0 +1,42 @@
+# Keep the Docker build context small: exclude anything the Dockerfile
+# doesn't actually consume. Faster `docker build`, and avoids pulling
+# secrets (.env) into the builder image's layer cache where they could
+# leak via a layer dump.
+
+# VCS
+.git
+.gitignore
+.gitattributes
+
+# CI / repo metadata
+.github
+
+# Local dev state and secrets
+.env
+.env.local
+.env.*.local
+.envrc
+.direnv
+tmp/
+dist/
+bin/
+animelisterr
+
+# Docs and non-build files (the image never references them)
+README.md
+LICENSE
+*.md
+docker-compose.yml
+docker-compose.*.yml
+
+# Editor / OS junk
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Test / build artifacts
+*.out
+coverage.*
