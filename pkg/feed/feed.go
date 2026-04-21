@@ -3,6 +3,7 @@ package feed
 import (
 	"context"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,13 @@ import (
 	"strings"
 	"time"
 )
+
+// ErrNoRankingPost is returned by Latest when the feed contains no
+// matching ranking post. This is NOT a failure — it simply means the
+// current week's post hasn't been published yet, or the last ranking
+// post has aged off the feed's visible window. Callers should treat it
+// as a benign "nothing to do" outcome, not an error to alert on.
+var ErrNoRankingPost = errors.New("feed: no ranking post in feed window")
 
 // RankingPost identifies a weekly ranking article on animecorner.me.
 type RankingPost struct {
@@ -98,7 +106,7 @@ func (c *Client) Latest(ctx context.Context) (*RankingPost, error) {
 		}
 		return post, nil
 	}
-	return nil, fmt.Errorf("no ranking post found in feed")
+	return nil, ErrNoRankingPost
 }
 
 // classify inspects an RSS item's title (and URL as fallback) and returns a

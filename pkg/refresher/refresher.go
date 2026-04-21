@@ -2,6 +2,7 @@ package refresher
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -97,6 +98,17 @@ func (r *Refresher) run(ctx context.Context, force bool) error {
 
 	post, err := r.Feed.Latest(ctx)
 	if err != nil {
+		// ErrNoRankingPost is expected between weekly posts (the current
+		// week hasn't been published yet, or the last one aged off the
+		// feed window). Treat it as a normal no-op: don't log an error,
+		// don't notify Discord, don't flip the lastError state. The next
+		// hourly tick will try again.
+		if errors.Is(err, feed.ErrNoRankingPost) {
+			r.Log.Info("no ranking post in feed window yet; will retry next tick")
+			r.lastRun = time.Now()
+			r.lastError = nil
+			return nil
+		}
 		r.lastError = err
 		r.Notify.SendFailure(ctx, "animelisterr: feed fetch failed", err.Error())
 		return fmt.Errorf("feed: %w", err)
